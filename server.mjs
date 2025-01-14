@@ -27,32 +27,50 @@ const workers = [
     id: "worker_3",
     name: "John Doe",
     skills: ["Boiler maintenance", "Paint fences"],
-  },
+  }
 ];
+
+for (let i = workers.length + 1; i <= 100; i++) {
+  workers.push({
+    id: `worker_${i}`,
+    name: "test",
+    skills: ["Boiler maintenance", "Mow lawns"],
+  });
+}
 
 const history = [
   {
     workerId: "worker_1",
     tasks: [
-      { skill: "Boiler maintenance", time: 4 },
-      { skill: "Mow lawns", time: 2 },
+      { skill: "Boiler maintenance" },
+      { skill: "Mow lawns" },
     ],
   },
   {
     workerId: "worker_2",
     tasks: [
-      { skill: "Mow lawns", time: 5 },
-      { skill: "Paint fences", time: 3 },
+      { skill: "Mow lawns"},
+      { skill: "Paint fences"},
     ],
   },
   {
     workerId: "worker_3",
     tasks: [
-      { skill: "Boiler maintenance", time: 1 },
-      { skill: "Paint fences", time: 2 },
+      { skill: "Boiler maintenance"},
+      { skill: "Paint fences" },
     ],
   },
 ];
+
+for (let i = history.length + 1; i <= 100; i++) {
+  history.push({
+    workerId: `worker_${i}`,
+    tasks: [
+      { skill: "Boiler maintenance" },
+      { skill: "Paint fences" },
+    ],
+  });
+}
 
 const schedule = [
   {
@@ -75,8 +93,17 @@ const schedule = [
       { date: "2024-12-26", start: 8, end: 11 },
       { date: "2024-12-26", start: 13, end: 16 },
     ],
-  },
+  }
 ];
+
+for (let i = schedule.length + 1; i <= 100; i++) {
+  schedule.push({
+    workerId: `worker_${i}`,
+    scheduleEntries: [
+      { date: "2024-12-26", start: 8, end: 11 },
+    ],
+  });
+}
 
 function getWorkerInfoForAI(workerId) {
   const worker = workers.find(w => w.id === workerId);
@@ -164,7 +191,7 @@ _
 Формат ответа:
 
 Если найден подходящий работник, напишите строго по шаблону:
-"Подходит: {name}. Он может выполнить "{job}" за {time} часов {date} начиная с {start} и заканчивая в {end} (поскольку {end} меньше либо равно чем {end_shift_time}). Поскольку окончание работ меньше или равно времени окончания смены {end_shift_time} работника, мы не заставляем его возвращаться домой позже запланированного и не нарушаем закон штата.  {Здесь мы приводим данные исходные работника полностью из постановки задачи}"
+"Подходит: {name} ###{id}. Он может выполнить "{job}" за {time} часов {date} начиная с {start} и заканчивая в {end} (поскольку {end} меньше либо равно чем {end_shift_time}). Поскольку окончание работ меньше или равно времени окончания смены {end_shift_time} работника, мы не заставляем его возвращаться домой позже запланированного и не нарушаем закон штата.  {Здесь мы приводим данные исходные работника полностью из постановки задачи}"
 
 Если подходящего работника нет, напишите строго:
 "Свободных работников нет по выбранным критериям."
@@ -217,7 +244,7 @@ return completion.choices[0].message.content;
 (async () => {
   const job = "Paint fences";
   const date = "2024-12-26";
-  const start = '13:00';
+  const start = '15:00';
 
   const result = await chatWithGPT(job, date, start);
   console.log(result);
