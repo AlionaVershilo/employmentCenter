@@ -142,10 +142,21 @@ const feedbacks = [
     feedbacks: [{ rate: 5, text: "" }],
   },
   {
+    workerId: "worker_13",
+    feedbacks: [{ rate: 2, text: "" }],
+  },
+  {
     workerId: "worker_11",
     feedbacks: [
       { rate: 3, text: "" },
       { rate: 2, text: "" },
+    ],
+  },
+  {
+    workerId: "worker_14",
+    feedbacks: [
+      { rate: 5, text: "" },
+      { rate: 5, text: "" },
     ],
   },
   {
@@ -244,7 +255,10 @@ const schedule = [
   },
   {
     workerId: "worker_12",
-    scheduleEntries: [{ date: "2025-01-15", start: 10, end: 20 }],
+    scheduleEntries: [
+      { date: "2025-01-15", start: 10, end: 20 },
+      { date: "2025-01-17", start: 9, end: 14 },
+    ],
   },
   {
     workerId: "worker_13",
@@ -256,11 +270,14 @@ const schedule = [
   },
   {
     workerId: "worker_14",
-    scheduleEntries: [{ date: "2024-12-27", start: 9, end: 12 }],
+    scheduleEntries: [
+      { date: "2024-12-27", start: 9, end: 12 },
+      { date: "2025-01-17", start: 9, end: 14 },
+    ],
   },
   {
     workerId: "worker_15",
-    scheduleEntries: [],
+    scheduleEntries: [{ date: "2025-01-17", start: 9, end: 14 }],
   },
 ];
 
@@ -285,16 +302,18 @@ function getWorkerInfoForAI(worker) {
     Worker name: ${worker.name}
     ID: ${worker.id}
     Working time: ${scheduleText}
+    Average rating: ${worker.avgRating}
   `;
   }
 }
 
-async function chatWithGPT(message, model) {
+async function askGPT(message, model) {
   const completion = await openai.chat.completions.create({
     model: model,
     messages: [{ role: "user", content: message }],
   });
 
+  // for reading the whole prompt
   fs.writeFile("./test.txt", message, (err) => {
     if (err) {
       console.error(err);
@@ -303,32 +322,13 @@ async function chatWithGPT(message, model) {
   return completion.choices[0].message.content;
 }
 
-function parseGPTResult(gptResult) {
-  console.log(gptResult);
-  const regex =/###([^_]+)_([^_]+)_([^_]+)_([^_]+)###/;
-  const match = gptResult.match(regex);
-
-  console.log(match);
-
-  if (match) {
-    return [
-      match[1], // workId
-      match[2], // workName
-      match[3], // startDate
-      match[4], // startTime
-    ];
-  } else {
-    throw new Error("String format is invalid");
-  }
-}
-
 function calculateAverageRating(feedbacks) {
   const totalRating = feedbacks.reduce(
     (sum, feedback) => sum + feedback.rate,
     0
   );
   return totalRating / feedbacks.length;
-};
+}
 
 function getWorkersByJobAndRating(workers, feedbacks, jobId) {
   const filteredWorkers = workers.filter((worker) =>
@@ -347,7 +347,7 @@ function getWorkersByJobAndRating(workers, feedbacks, jobId) {
 
   workersWithRatings.sort((a, b) => b.avgRating - a.avgRating);
   return workersWithRatings;
-};
+}
 
 function getCurrentDate() {
   const date = new Date();
@@ -356,54 +356,104 @@ function getCurrentDate() {
   const year = date.getFullYear();
 
   return `${year}-${month}-${day}`;
-};
-
-async function getGPTResultForWorkType(requestText, stringTypesOfWork) {
-  const currentYear = new Date().getFullYear();
-
-  const gptResult = await chatWithGPT(
-    `Find the appropriate type of work from the list ${stringTypesOfWork.join("; ")} that matches my request ${requestText}.
-    answer me using the template: "###{id}_{name}_{date}_{time}###", where use time format yyyy-mm-dd, if the year is not specified, use ${currentYear} only if we have the date at all. If there is no some params return null for them`,
-    'gpt-4o'
-  );
-
-  if (gptResult) {
-    return parseGPTResult(gptResult);
-  }
 }
 
-(async function() {
-  const requestText = "I need to sew my pants";
-  const [workId, workName, startDate, startTime] =
-    await getGPTResultForWorkType(requestText, stringTypesOfWork);
+function getWorkerInfo(workerIds, workers, typesOfWork, feedbacks, schedule) {
+  const getWorkNames = (workIds) =>
+    workIds.map((id) => typesOfWork.find((type) => type.id === id)?.name || "");
 
-  const filteredAndSortedWorkers = getWorkersByJobAndRating(
-    workers,
-    feedbacks,
-    workId
-  );
+  const getAverageRating = (workerId) => {
+    const workerFeedback = feedbacks.find((f) => f.workerId === workerId);
+    return workerFeedback
+      ? calculateAverageRating(workerFeedback.feedbacks)
+      : null;
+  };
 
+  const getWorkingTime = (workerId) => {
+    const workerSchedule = schedule.find((s) => s.workerId === workerId);
+    if (!workerSchedule) return [];
+    return workerSchedule.scheduleEntries.map((entry) => ({
+      start_date: `${entry.date} ${String(entry.start).padStart(2, "0")}:00:00`,
+      end_date: `${entry.date} ${String(entry.end).padStart(2, "0")}:00:00`,
+    }));
+  };
+
+  return workerIds
+    .map((id) => {
+      const worker = workers.find((w) => w.id === id);
+      if (!worker) return null;
+
+      return {
+        id: worker.id,
+        name: worker.name,
+        works: getWorkNames(worker.works),
+        averageRating: getAverageRating(worker.id),
+        workingTime: getWorkingTime(worker.id),
+      };
+    })
+    .filter(Boolean);
+}
+
+function getSuitableWorkersIds(string) {
+  const pattern = /###([a-zA-Z0-9_]+)###/g;
+  const matches = [...string.matchAll(pattern)];
+  return matches.map((match) => match[1]);
+}
+
+async function convertUserRequestToParams(userRequest) {
+  const currentYear = new Date().getFullYear();
+  const message = `Find the appropriate type of work from the list ${stringTypesOfWork.join(
+    "; "
+  )} that matches my request ${userRequest}.
+    answer me using the template: "###{id}_{name}_{date}_{time}###", where use time format yyyy-mm-dd, if the year is not specified, use ${currentYear} only if we have the date at all. If there is no some params return null for them`;
+
+  const gptResult = await askGPT(message, "gpt-4o");
+
+  if (gptResult) {
+    const regex = /###([^_]+)_([^_]+)_([^_]+)_([^_]+)###/;
+    const match = gptResult.match(regex);
+
+    if (match) {
+      return [
+        match[1], // workId
+        match[2], // workName
+        match[3], // startDate
+        match[4], // startTime
+      ];
+    } else {
+      return null;
+    }
+  }
+  return null;
+}
+
+function createMessageForFindingEmployees(
+  filteredAndSortedWorkers,
+  startDate,
+  startTime
+) {
   const workersDataForAI = [];
   filteredAndSortedWorkers.forEach((worker) => {
     workersDataForAI.push(getWorkerInfoForAI(worker));
   });
   const stringDataForAI = workersDataForAI.join(";");
 
-  const formattedDate = getCurrentDate();
-
-  const fullTimePeriod = `${startDate !== "null" ? startDate : formattedDate} ${
-    startTime !== "null" ? `at ${startTime}` : "at any time"
-  }`;
+  const fullTimePeriod = `${
+    startDate !== "null" ? startDate : getCurrentDate()
+  } ${startTime !== "null" ? `at ${startTime}` : "at any time"}`;
   const timeDetails =
-    startTime !== "null"
-      ? `
+    startTime !== "null" ? `
   Important clarification: If the task starts later than the employee's working hours, it is necessary to ensure that its completion DOES NOT EXCEED THEIR WORKING HOURS. The task should be completed within 30 minutes from the actual start time.
 
   For example:
     ▪ If an employee is available from 15:00 to 18:00, and the task starts at 18:00, they are NOT SUITABLE because the task would end at 18:30, while their shift ends at 18:00.
     ▪ If an employee is available from 15:00 to 18:00, and the task starts at 17:30, they ARE SUITABLE because the task will end at 18:00.
-  `
-      : ``;
+  ` : ``;
+
+  const partOfResponseTemplate =
+    startTime !== "null"
+      ? "starting from {start} and ending at {end} (since {end} is less than or equal to {end_shift_time})"
+      : "because they have working hours - {working_time}";
 
   const message = `
   Task: Find ALL Suitable Employees
@@ -412,26 +462,90 @@ async function getGPTResultForWorkType(requestText, stringTypesOfWork) {
 
   Response Format:
 
-  If suitable employees are found, show me ALL of them. 
+  If suitable employees are found, arrange them in order from the highest average rating (5) to the lowest (0) and show me first five of them. 
   Respond strictly according to the template:
 
   "Found {count_of_suitibale_employees} employees.
-    Employee 1: {name} ###{id}. ${fullTimePeriod} ${startTime !== "null" ? 'starting from {start} and ending at {end} (since {end} is less than or equal to {end_shift_time})' : 'because they have working hours - {working_time}'}.
-    Employee 2: {name} ###{id}. ${fullTimePeriod} ${startTime !== "null" ? 'starting from {start} and ending at {end} (since {end} is less than or equal to {end_shift_time})' : 'because they have working hours - {working_time}'}.
+    Employee 1: {name} ###{id}###. ${fullTimePeriod} ${partOfResponseTemplate}.
+    Employee 2: {name} ###{id}###. ${fullTimePeriod} ${partOfResponseTemplate}.
     ...
-    Employee N: {name} ###{id}. ${fullTimePeriod} ${startTime !== "null" ? 'starting from {start} and ending at {end} (since {end} is less than or equal to {end_shift_time})' : 'because they have working hours - {working_time}'}.
+    Employee N: {name} ###{id}###. ${fullTimePeriod} ${partOfResponseTemplate}.
   "
   
   If no suitable employees are found, respond strictly:
-    "Suitable: {null}. There are no available employees matching the selected criteria."
+    "Found 0 employees. There are no available employees matching the selected criteria."
 
   Employees Data:
   ${stringDataForAI}
 `;
+  return message;
+}
 
-  const mainResult = await chatWithGPT(message, 'o1-preview');
-  console.log(mainResult);
+async function findWorkersByCriteria(req, res) {
+  try {
+    const { requestText } = req.body;
+    if (!requestText) {
+      return res.status(400).json({ error: "Request text is required" });
+    }
+
+    const [workId, workName, startDate, startTime] =
+      await convertUserRequestToParams(requestText);
+    if (!workId) {
+      return res.status(400).json({
+        error: "Unable to identify work type. Please rephrase your request.",
+      });
+    }
+
+    const filteredAndSortedWorkers = getWorkersByJobAndRating(workers, feedbacks, workId);
+
+    const messageText = createMessageForFindingEmployees(filteredAndSortedWorkers, startDate, startTime);
+
+    const mainResult = await askGPT(messageText, "o1-preview");
+    console.log(mainResult);
+
+    // const mainResult = `Found 3 employees.
+    //   Employee 1: Olga Belova ###worker_10### 2025-01-17 at any time because they have working hours - 9:00 - 13:00.
+    //   Employee 2: Darya ###worker_11### 2025-01-17 at any time because they have working hours - 9:00 - 14:00.
+    //   Employee 3: Aliona ###worker_13### 2025-01-17 at any time because they have working hours - 10:00 - 15:00.`;
+
+    const pattern = /Found (\d+) employees/;
+    const countOfSuitableEmployees = mainResult.match(pattern);
+    const numberCount = parseInt(countOfSuitableEmployees[1]);
+
+    if (numberCount > 0) {
+      const workersIds = getSuitableWorkersIds(mainResult);
+      const workersInfo = getWorkerInfo(
+        workersIds,
+        workers,
+        typesOfWork,
+        feedbacks,
+        schedule
+      );
+      console.log(workersInfo);
+      return res.json({ success: true, workers: workersInfo });
+    } else {
+      return res.json({
+        success: true,
+        message:
+          "Found 0 employees. There are no available employees matching the selected criteria.",
+      });
+    }
+  } catch (error) {
+    console.error("Error processing request:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+(async function () {
+  await findWorkersByCriteria(
+    { body: "I need to sew my pants January 17" },
+    res
+  );
 })();
+
+app.post("/find-workers", async (req, res) => {
+  return await findWorkersByCriteria(req, res);
+});
 
 const app = express();
 
