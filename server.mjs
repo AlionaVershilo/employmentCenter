@@ -308,25 +308,28 @@ function getWorkerInfoForAI(worker) {
 }
 
 async function askGPT(message, model) {
-  const completion = await openai.chat.completions.create({
-    model: model,
-    messages: [{ role: "user", content: message }],
-  });
+  try {
+    const completion = await openai.chat.completions.create({
+      model: model,
+      messages: [{ role: "user", content: message }],
+    });
 
-  // for reading the whole prompt
-  fs.writeFile("./test.txt", message, (err) => {
-    if (err) {
-      console.error(err);
-    }
-  });
-  return completion.choices[0].message.content;
+    // for reading the whole prompt in txt file
+    fs.writeFile("./test.txt", message, (err) => {
+      if (err) {
+        console.error(err);
+      }
+    });
+    return completion.choices[0].message.content;
+  } catch (error) {
+    console.error("OpenAI API error:", error);
+    throw new Error("Failed to fetch response from OpenAI.");
+  }
 }
 
 function calculateAverageRating(feedbacks) {
-  const totalRating = feedbacks.reduce(
-    (sum, feedback) => sum + feedback.rate,
-    0
-  );
+  if (!feedbacks || feedbacks.length === 0) return null;
+  const totalRating = feedbacks.reduce((sum, feedback) => sum + feedback.rate, 0);
   return totalRating / feedbacks.length;
 }
 
@@ -358,7 +361,7 @@ function getCurrentDate() {
   return `${year}-${month}-${day}`;
 }
 
-function getWorkerInfo(workerIds, workers, typesOfWork, feedbacks, schedule) {
+function getWorkerInfo(workerIds, workers, typesOfWork, feedbacks, schedule, startDate) {
   const getWorkNames = (workIds) =>
     workIds.map((id) => typesOfWork.find((type) => type.id === id)?.name || "");
 
@@ -372,10 +375,13 @@ function getWorkerInfo(workerIds, workers, typesOfWork, feedbacks, schedule) {
   const getWorkingTime = (workerId) => {
     const workerSchedule = schedule.find((s) => s.workerId === workerId);
     if (!workerSchedule) return [];
-    return workerSchedule.scheduleEntries.map((entry) => ({
-      start_date: `${entry.date} ${String(entry.start).padStart(2, "0")}:00:00`,
-      end_date: `${entry.date} ${String(entry.end).padStart(2, "0")}:00:00`,
-    }));
+
+    return workerSchedule.scheduleEntries
+      .filter((entry) => new Date(entry.date) >= new Date(startDate)) // show only future working hours
+      .map((entry) => ({
+        start_date: `${entry.date} ${String(entry.start).padStart(2, "0")}:00:00`,
+        end_date: `${entry.date} ${String(entry.end).padStart(2, "0")}:00:00`,
+      }));
   };
 
   return workerIds
@@ -402,15 +408,13 @@ function getSuitableWorkersIds(string) {
 
 async function convertUserRequestToParams(userRequest) {
   const currentYear = new Date().getFullYear();
-  const message = `Find the appropriate type of work from the list ${stringTypesOfWork.join(
-    "; "
-  )} that matches my request ${userRequest}.
+  const message = `Find the appropriate type of work from the list ${stringTypesOfWork.join("; ")} that matches my request ${userRequest}.
     answer me using the template: "###{id}_{name}_{date}_{time}###", where use time format yyyy-mm-dd, if the year is not specified, use ${currentYear} only if we have the date at all. If there is no some params return null for them`;
 
   const gptResult = await askGPT(message, "gpt-4o");
 
   if (gptResult) {
-    const regex = /###([^_]+)_([^_]+)_([^_]+)_([^_]+)###/;
+    const regex = /###([^_]+)_([^_]+)_([^_]+)_([^_]+)###/;  // workId_workName_date_time
     const match = gptResult.match(regex);
 
     if (match) {
@@ -421,10 +425,10 @@ async function convertUserRequestToParams(userRequest) {
         match[4], // startTime
       ];
     } else {
-      return null;
+      return [null, null, null, null];
     }
   }
-  return null;
+  return [null, null, null, null];
 }
 
 function createMessageForFindingEmployees(
@@ -463,8 +467,7 @@ function createMessageForFindingEmployees(
   Response Format:
 
   If suitable employees are found, arrange them in order from the highest average rating (5) to the lowest (0) and show me first five of them. 
-  Respond strictly according to the template:
-
+  Respond STRICTLY according to the template:
   "Found {count_of_suitibale_employees} employees.
     Employee 1: {name} ###{id}###. ${fullTimePeriod} ${partOfResponseTemplate}.
     Employee 2: {name} ###{id}###. ${fullTimePeriod} ${partOfResponseTemplate}.
@@ -472,7 +475,7 @@ function createMessageForFindingEmployees(
     Employee N: {name} ###{id}###. ${fullTimePeriod} ${partOfResponseTemplate}.
   "
   
-  If no suitable employees are found, respond strictly:
+  If no suitable employees are found, respond STRICTLY:
     "Found 0 employees. There are no available employees matching the selected criteria."
 
   Employees Data:
@@ -488,8 +491,7 @@ async function findWorkersByCriteria(req, res) {
       return res.status(400).json({ error: "Request text is required" });
     }
 
-    const [workId, workName, startDate, startTime] =
-      await convertUserRequestToParams(requestText);
+    const [workId, workName, startDate, startTime] = await convertUserRequestToParams(requestText);
     if (!workId) {
       return res.status(400).json({
         error: "Unable to identify work type. Please rephrase your request.",
@@ -501,7 +503,7 @@ async function findWorkersByCriteria(req, res) {
     const messageText = createMessageForFindingEmployees(filteredAndSortedWorkers, startDate, startTime);
 
     const mainResult = await askGPT(messageText, "o1-preview");
-    console.log(mainResult);
+    // console.log(mainResult);
 
     // const mainResult = `Found 3 employees.
     //   Employee 1: Olga Belova ###worker_10### 2025-01-17 at any time because they have working hours - 9:00 - 13:00.
@@ -519,9 +521,10 @@ async function findWorkersByCriteria(req, res) {
         workers,
         typesOfWork,
         feedbacks,
-        schedule
+        schedule,
+        startDate !== "null" ? startDate : getCurrentDate()
       );
-      console.log(workersInfo);
+      // console.log(workersInfo);
       return res.json({ success: true, workers: workersInfo });
     } else {
       return res.json({
@@ -536,20 +539,21 @@ async function findWorkersByCriteria(req, res) {
   }
 }
 
-(async function () {
-  await findWorkersByCriteria(
-    { body: "I need to sew my pants January 17" },
-    res
-  );
-})();
-
-app.post("/find-workers", async (req, res) => {
-  return await findWorkersByCriteria(req, res);
-});
+// (async function () {
+  // await findWorkersByCriteria(
+  //   { body: "I need to sew my pants January 17" },
+  //   res
+  // );
+// })();
 
 const app = express();
 
 app.use(cors({ origin: "*" }));
+app.use(express.json());
+
+app.post("/find-workers", async (req, res) => {
+  return await findWorkersByCriteria(req, res);
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
